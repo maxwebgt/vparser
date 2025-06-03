@@ -20,6 +20,18 @@ import { PROXY_CONFIG } from './modules/config.js';
 // Setup logger to capture console output
 setupLogger();
 
+// ДИАГНОСТИЧЕСКИЙ РЕЖИМ VDS
+const isDiagnostic = process.argv.includes('--diagnostic') || process.argv.includes('--limit');
+if (isDiagnostic) {
+  const isVDS = process.platform === 'linux' && !process.env.WSL_DISTRO_NAME;
+  log(`🔍 === ДИАГНОСТИКА VDS ===`, 'info');
+  log(`🖥️ Среда: ${isVDS ? 'VDS_LINUX' : 'WINDOWS_DOCKER'}`, 'info');
+  log(`📍 Platform: ${process.platform}`, 'info');
+  log(`📍 Architecture: ${process.arch}`, 'info');
+  log(`📍 Node.js: ${process.version}`, 'info');
+  log(`📍 WSL_DISTRO_NAME: ${process.env.WSL_DISTRO_NAME || 'НЕТ'}`, 'info');
+}
+
 // Глобальные переменные для отслеживания ресурсов
 let browser = null;
 let isShuttingDown = false;
