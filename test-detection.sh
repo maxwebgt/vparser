@@ -21,7 +21,7 @@ services:
     volumes:
       - ./parser2:/app
     working_dir: /app
-    command: node ultimate-debug.js
+    command: node scraper.js --show-browser --limit 1
     environment:
       - NODE_ENV=production
     user: "1000:1000"
