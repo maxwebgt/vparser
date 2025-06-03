@@ -40,7 +40,8 @@ services:
     depends_on:
       - mongo_db
     volumes:
-      - ./parser2/logs:/app/logs
+      # Убираем проблемный volume для логов - пусть пишутся внутри контейнера
+      # - ./parser2/logs:/app/logs
       - ./parser2/data:/app/data
       # D-Bus поддержка
       - /var/run/dbus:/var/run/dbus
