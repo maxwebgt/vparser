@@ -24,12 +24,7 @@ services:
     command: node ultimate-debug.js
     environment:
       - NODE_ENV=production
-    networks:
-      - vetg-network
-
-networks:
-  vetg-network:
-    external: true
+    user: "1000:1000"
 EOF
 
 echo "🚀 Запуск диагностического контейнера..."
