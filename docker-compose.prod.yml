@@ -12,7 +12,6 @@ services:
     volumes:
       - ./docker/mongo/mongod.conf:/etc/mongod.conf
       - mongo_data_prod:/data/db
-      - ./docker/logs:/var/log/mongodb
     command: ["mongod", "--auth", "--config", "/etc/mongod.conf"]
   
   mongo_express:
@@ -52,6 +51,8 @@ services:
     privileged: true
     cap_add:
       - SYS_ADMIN
+    # Создаем пользователя с нужными правами
+    user: "1000:1000"
 
 volumes:
   mongo_data_prod:
