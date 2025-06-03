@@ -1,0 +1,58 @@
+services:  
+  mongo_db:
+    image: mongo:6.0
+    container_name: mongo_db_prod
+    restart: always
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_INITDB_ROOT_USERNAME}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_INITDB_ROOT_PASSWORD}
+      - MONGO_INITDB_DATABASE=vetg
+    volumes:
+      - ./docker/mongo/mongod.conf:/etc/mongod.conf
+      - mongo_data_prod:/data/db
+      - ./docker/logs:/var/log/mongodb
+    command: ["mongod", "--auth", "--config", "/etc/mongod.conf"]
+  
+  mongo_express:
+    image: mongo-express:latest
+    container_name: mongo_express_prod  # Changed from mongo_express to mongo_express_prod
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      - ME_CONFIG_MONGODB_SERVER=mongo_db
+      - ME_CONFIG_MONGODB_PORT=27017
+      - ME_CONFIG_MONGODB_ADMINUSERNAME=root
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=example
+      - ME_CONFIG_BASICAUTH_USERNAME=admin
+      - ME_CONFIG_BASICAUTH_PASSWORD=_)9Q2x3i*23hHzh
+    depends_on:
+      - mongo_db
+   
+  parser2:
+    build:
+      context: ./parser2
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=${MONGODB_URI}
+    depends_on:
+      - mongo_db
+    volumes:
+      - ./parser2/logs:/app/logs
+      - ./parser2/data:/app/data
+      # D-Bus поддержка
+      - /var/run/dbus:/var/run/dbus
+      - /run/user/1000:/run/user/1000
+      # X11 поддержка
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    restart: unless-stopped
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+
+volumes:
+  mongo_data_prod:
+    driver: local

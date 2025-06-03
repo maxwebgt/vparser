@@ -1,0 +1,27 @@
+{
+  "name": "vseinstrumenti-parser",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "scraper.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node scraper.js",
+    "dev": "node scraper.js --show-browser",
+    "test": "node scraper.js --show-browser --limit 1"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "mongoose": "^8.0.0", 
+    "puppeteer": "^21.0.0",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {},
+  "puppeteer": {
+    "skipDownload": true
+  },
+  "config": {
+    "puppeteer_skip_chromium_download": true
+  }
+}
