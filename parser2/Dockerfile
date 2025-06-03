@@ -87,7 +87,11 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --omit=dev
 COPY . .
-RUN chown -R parser:parser /app
+
+# Создаем директории для логов и данных с правильными правами
+RUN mkdir -p /app/logs /app/data && \
+    chown -R parser:parser /app && \
+    chmod -R 755 /app/logs /app/data
 
 COPY start-parser.sh /app/start-parser.sh  
 RUN chmod +x /app/start-parser.sh && \

@@ -21,11 +21,12 @@ echo "🔐 Установка прав доступа..."
 chmod 755 ./docker/logs
 chown -R $USER_ID:$GROUP_ID ./docker/logs
 
-# Права для parser2
+# Права для parser2 (UID 1000 внутри контейнера)
 chmod 755 ./parser2/logs
 chmod 755 ./parser2/data
-chown -R $USER_ID:$GROUP_ID ./parser2/logs
-chown -R $USER_ID:$GROUP_ID ./parser2/data
+# Устанавливаем владельца как 1000:1000 (пользователь parser в контейнере)
+chown -R 1000:1000 ./parser2/logs 2>/dev/null || sudo chown -R 1000:1000 ./parser2/logs
+chown -R 1000:1000 ./parser2/data 2>/dev/null || sudo chown -R 1000:1000 ./parser2/data
 
 echo "✅ Права доступа настроены!"
 

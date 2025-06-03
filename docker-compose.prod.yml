@@ -51,8 +51,6 @@ services:
     privileged: true
     cap_add:
       - SYS_ADMIN
-    # Создаем пользователя с нужными правами
-    user: "1000:1000"
 
 volumes:
   mongo_data_prod:
