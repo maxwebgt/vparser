@@ -936,27 +936,24 @@ const performThreeStageNavigation = async (page, targetUrl, cityId = CITY_CONFIG
     log(`✅ [STAGE 1/3] Главная загружена за ${Date.now() - homePageStart}ms, статус: ${homeStatus}`, 'info');
     
     if (homeStatus === 403) {
-      log(`🔄 [STAGE 1/3] HTTP 403 - начинается прогрев прокси (это нормально!)`, 'info');
-      log(`⏳ [STAGE 1/3] Ждем 3 секунды пока антибот анализирует браузер...`, 'info');
+      log(`🚫 [STAGE 1/3] HTTP 403 обнаружен - регистрируем защиту бота`, 'warning');
       
-      // Ждем пока антибот прогреет наш IP
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      
-      // Повторяем запрос после прогрева
-      log(`🔄 [STAGE 1/3] Повторяем главную страницу после прогрева...`, 'info');
-      const homeRetryResponse = await page.goto('https://www.vseinstrumenti.ru/', { 
-        waitUntil: 'domcontentloaded',
-        timeout: 30000 
-      });
-      
-      const homeRetryStatus = homeRetryResponse ? homeRetryResponse.status() : 'unknown';
-      
-      if (homeRetryStatus === 403) {
-        log(`❌ [STAGE 1/3] Прогрев не помог, все еще 403 - прокси не работает`, 'warning');
-        return { success: false, needsProxy: true, stage: 'home', status: 403, reason: 'FAILED_WARMUP_403' };
-      } else {
-        log(`✅ [STAGE 1/3] Прогрев успешен! Главная загружена (статус: ${homeRetryStatus})`, 'success');
+      // Регистрируем защиту бота если передан proxyHandler
+      if (proxyHandler) {
+        const shouldUseProxy = proxyHandler.registerProtectionHit();
+        log(`🔒 [STAGE 1/3] Защита зарегистрирована. Total hits: ${proxyHandler.getProtectionHitCount()}, Should use proxy: ${shouldUseProxy}`, 'proxy');
+        
+        return { 
+          success: false, 
+          needsProxy: shouldUseProxy, 
+          stage: 'home', 
+          status: 403,
+          reason: 'HTTP_403_ON_HOME_PAGE'
+        };
       }
+      
+      log(`❌ [STAGE 1/3] Главная заблокирована: HTTP 403 - ПРОПУСКАЕМ 3-STAGE навигацию`, 'warning');
+      return { success: false, needsProxy: false, stage: 'home', status: 403, reason: 'HTTP_403_NO_PROXY_HANDLER' };
     }
     
     // Имитируем просмотр главной
@@ -983,24 +980,22 @@ const performThreeStageNavigation = async (page, targetUrl, cityId = CITY_CONFIG
     
     // Проверяем статус этапа города
     if (cityStatus === 403) {
-      log(`🔄 [STAGE 2/3] HTTP 403 на этапе города - продолжаем прогрев`, 'info');
-      log(`⏳ [STAGE 2/3] Ждем 3 секунды и повторяем...`, 'info');
+      log(`🚫 [STAGE 2/3] HTTP 403 на этапе города - регистрируем защиту бота`, 'warning');
       
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      
-      const cityRetryResponse = await page.goto(cityUrl, { 
-        waitUntil: 'domcontentloaded',
-        timeout: 30000 
-      });
-      
-      const cityRetryStatus = cityRetryResponse ? cityRetryResponse.status() : 'unknown';
-      
-      if (cityRetryStatus === 403) {
-        log(`❌ [STAGE 2/3] Прогрев не помог на этапе города, все еще 403`, 'warning');
-        return { success: false, needsProxy: true, stage: 'city', status: 403, reason: 'FAILED_WARMUP_CITY_403' };
-      } else {
-        log(`✅ [STAGE 2/3] Прогрев успешен! Город установлен (статус: ${cityRetryStatus})`, 'success');
+      if (proxyHandler) {
+        const shouldUseProxy = proxyHandler.registerProtectionHit();
+        log(`🔒 [STAGE 2/3] Защита зарегистрирована. Total hits: ${proxyHandler.getProtectionHitCount()}, Should use proxy: ${shouldUseProxy}`, 'proxy');
+        
+        return { 
+          success: false, 
+          needsProxy: shouldUseProxy, 
+          stage: 'city', 
+          status: 403,
+          reason: 'HTTP_403_ON_CITY_PAGE'
+        };
       }
+      
+      return { success: false, needsProxy: false, stage: 'city', status: 403, reason: 'HTTP_403_ON_CITY_NO_PROXY_HANDLER' };
     }
     
     // Ждем установки кук
@@ -1599,33 +1594,31 @@ const processProducts = async (headless = true, limit = 0) => {
           // Clear cookies before navigation to help prevent redirect loops
           await clearCookiesForDomain(page);
           
-          // *** НОВАЯ УЛУЧШЕННАЯ НАВИГАЦИЯ С ДЕТАЛЬНОЙ ОТЛАДКОЙ ***
-                                  log(`🔍 [DEBUG-NAV] URL: ${shortenUrl(url)}`, 'debug');
-          log(`🔍 [DEBUG-NAV] hadRedirectLoop: ${hadRedirectLoop}`, 'debug');
-          log(`🔍 [DEBUG-NAV] redirectErrorUrls.has: ${redirectErrorUrls.has(url.split('?')[0])}`, 'debug');
+          // 🚀 НОВАЯ УМНАЯ НАВИГАЦИЯ - ПРОСТАЯ И ЭФФЕКТИВНАЯ
+          log(`🔍 [SMART-NAV] URL: ${shortenUrl(url)}`, 'debug');
           
-          // Для vseinstrumenti.ru используем трехэтапную навигацию
-          if (url.includes('vseinstrumenti.ru') && !hadRedirectLoop && !redirectErrorUrls.has(url.split('?')[0])) {
-            log(`🚀 [NAVIGATION] Используем трехэтапную навигацию для vseinstrumenti.ru`, 'info');
+          let navigationSuccess = { success: false, needsProxy: false, status: 'unknown', reason: 'NOT_ATTEMPTED' };
+          
+          // Для vseinstrumenti.ru используем умную навигацию
+          if (url.includes('vseinstrumenti.ru')) {
+            log(`🚀 [SMART-NAV] Используем умную навигацию для vseinstrumenti.ru`, 'info');
             
-            const navigationSuccess = await performThreeStageNavigation(page, url, CITY_CONFIG.representId, proxyHandler);
+            navigationSuccess = await smartProductScraping(page, url, CITY_CONFIG.representId, proxyHandler);
             
             if (!navigationSuccess.success) {
-              log(`❌ [NAVIGATION] Трехэтапная навигация не удалась, пробуем двухэтапный fallback`, 'warning');
+              log(`❌ [SMART-NAV] Умная навигация требует дальнейших действий: ${navigationSuccess.reason}`, 'warning');
               
-              // Проверяем нужен ли прокси на основе результата навигации
+              // Если нужен прокси и мы его еще не используем
               if (navigationSuccess.needsProxy && !usedProxy && PROXY_CONFIG.useProxy) {
-                log(`🔒 [NAVIGATION] Трехэтапная навигация требует прокси (${navigationSuccess.reason})`, 'proxy');
+                log(`🔒 [SMART-NAV] Требуется прокси (${navigationSuccess.reason})`, 'proxy');
                 botProtectionDetected = true;
-                
-                // Используем continue чтобы начать новую итерацию с прокси
-                continue;
+                continue; // Начинаем новую итерацию с прокси
               }
               
-              // Если 403 через прокси - помечаем прокси как failed и пробуем следующий
+              // Если 403 через прокси - помечаем прокси как failed
               if (navigationSuccess.status === 403 && usedProxy && currentProxy) {
-                log(`🔴 [NAVIGATION] Прокси ${currentProxy.host}:${currentProxy.port} не обошел защиту - помечаем как failed`, 'proxy');
-                proxyHandler.markProxyAsFailed(currentProxy, 'HTTP_403_3STAGE_NAVIGATION');
+                log(`🔴 [SMART-NAV] Прокси ${currentProxy.host}:${currentProxy.port} не обошел защиту - помечаем как failed`, 'proxy');
+                proxyHandler.markProxyAsFailed(currentProxy, 'HTTP_403_SMART_NAVIGATION');
                 
                 // Сбрасываем флаги и пробуем с новым прокси
                 usedProxy = false;
@@ -1634,10 +1627,11 @@ const processProducts = async (headless = true, limit = 0) => {
                 continue;
               }
               
-              hadRedirectLoop = true; // Помечаем чтобы в следующий раз использовать fallback
-              
-              // 🏙️ [FALLBACK] ДВУХЭТАПНЫЙ FALLBACK С ГОРОДОМ
-              log(`🏙️ [FALLBACK] Этап 1: Устанавливаем город ID=${CITY_CONFIG.representId}...`, 'info');
+              // Если другая ошибка
+              throw new Error(`Smart navigation failed: ${navigationSuccess.reason}`);
+            }
+            
+            log(`✅ [SMART-NAV] Умная навигация успешна (тип: ${navigationSuccess.stage})`, 'success');
               const cityFallbackUrl = `https://www.vseinstrumenti.ru/represent/change/?represent_id=${CITY_CONFIG.representId}`;
               
               const cityFallbackResponse = await safeNavigate(page, cityFallbackUrl, { 
@@ -1821,47 +1815,28 @@ const processProducts = async (headless = true, limit = 0) => {
               log(`🔍 [PRODUCT] Финальный URL: ${shortenUrl(finalUrl)}`, 'debug');
             }
           } else {
-            // Для других сайтов или при проблемах с city representation - прямой переход
-            const shouldUseDirectUrl = hadRedirectLoop || redirectErrorUrls.has(url.split('?')[0]);
-            const transformedUrl = shouldUseDirectUrl ? url : transformUrlWithCityRepresentation(url);
+            // Для остальных сайтов используем прямую навигацию
+            log(`🚀 [SIMPLE-NAV] Прямая навигация для другого сайта`, 'info');
             
-            // Log the transformation if the URL was changed
-            if (transformedUrl !== url) {
-              log(`URL transformed for city representation (ID: ${CITY_CONFIG.representId})`, 'info');
-              log(`Original: ${url}`, 'debug');
-              log(`Transformed: ${transformedUrl}`, 'debug');
-            } else if (shouldUseDirectUrl) {
-              log(`Using direct URL (skipping city representation) due to previous redirect errors`, 'info');
-            }
+            const simpleNavResult = await safeNavigate(page, url, { timeout: pageTimeoutMs });
             
-            // Log proxy status if using one
-            if (currentProxy) {
-              log(`🌐 Using proxy: ${currentProxy.host}:${currentProxy.port} (${currentProxy.country}) for request`, 'proxy');
-            }
-            
-            // Use our safer navigation method
-            const navigationSuccess = await safeNavigate(page, transformedUrl, { 
-              timeout: pageTimeoutMs 
-            });
-            
-            if (!navigationSuccess.success) {
+            if (!simpleNavResult.success) {
               // Проверяем статус для других сайтов
-              if (navigationSuccess.status === 403) {
-                log(`🚫 [OTHER-SITES] HTTP 403 обнаружен - регистрируем защиту`, 'warning');
+              if (simpleNavResult.status === 403) {
+                log(`🚫 [SIMPLE-NAV] HTTP 403 - регистрируем защиту`, 'warning');
                 botProtectionDetected = true;
                 const shouldUseProxy = proxyHandler.registerProtectionHit(); 
                 
                 if (shouldUseProxy && !usedProxy && PROXY_CONFIG.useProxy) {
-                  log(`🔒 [OTHER-SITES] Нужен прокси. Total hits: ${proxyHandler.getProtectionHitCount()}`, 'proxy');
+                  log(`🔒 [SIMPLE-NAV] Нужен прокси. Total hits: ${proxyHandler.getProtectionHitCount()}`, 'proxy');
                   continue; // Начинаем новую итерацию с прокси
                 }
                 
-                // Если 403 через прокси - помечаем прокси как failed и пробуем следующий
+                // Если 403 через прокси - помечаем прокси как failed
                 if (usedProxy && currentProxy) {
-                  log(`🔴 [OTHER-SITES] Прокси ${currentProxy.host}:${currentProxy.port} не обошел защиту - помечаем как failed`, 'proxy');
+                  log(`🔴 [SIMPLE-NAV] Прокси ${currentProxy.host}:${currentProxy.port} не обошел защиту - помечаем как failed`, 'proxy');
                   proxyHandler.markProxyAsFailed(currentProxy, 'HTTP_403_OTHER_SITES');
                   
-                  // Сбрасываем флаги и пробуем с новым прокси
                   usedProxy = false;
                   currentProxy = null;
                   botProtectionDetected = true;
@@ -1869,10 +1844,10 @@ const processProducts = async (headless = true, limit = 0) => {
                 }
               }
               
-              throw new Error(`Failed to navigate to page: ${navigationSuccess.error || 'unknown error'}`);
+              throw new Error(`Failed to navigate to page: ${simpleNavResult.error || 'unknown error'}`);
             }
             
-            log(`✅ [OTHER-SITES] Страница загружена (статус: ${navigationSuccess.status})`, 'info');
+            log(`✅ [SIMPLE-NAV] Страница загружена (статус: ${simpleNavResult.status})`, 'info');
           }
           
           // Check for redirect loop errors - in this case, it's the actual chrome redirect error page
@@ -2454,4 +2429,268 @@ if (isMainModule) {
 export {
   processProducts,
   fetchProductsFromDatabase
+};
+
+/**
+ * 🚀 SMART PRODUCT SCRAPING - Простой и эффективный алгоритм обхода антибота
+ * 
+ * Алгоритм:
+ * 1. Прямой переход к товару (ожидаем 403)
+ * 2. Если 403 -> ждем выполнения антибот скриптов (3-5 сек)
+ * 3. Повторяем запрос (ожидаем 200)
+ * 4. Устанавливаем город если нужно
+ * 5. Только если все провалилось - меняем прокси
+ * 
+ * @param {Object} page - Puppeteer page object
+ * @param {string} productUrl - URL товара
+ * @param {number} cityId - ID города (по умолчанию 1)
+ * @param {Object} proxyHandler - Обработчик прокси
+ * @returns {Promise<Object>} - Результат навигации
+ */
+const smartProductScraping = async (page, productUrl, cityId = CITY_CONFIG.representId, proxyHandler = null) => {
+  try {
+    log(`🚀 [SMART] === УМНАЯ НАВИГАЦИЯ К ТОВАРУ ===`, 'info');
+    log(`🎯 [SMART] Целевой URL: ${shortenUrl(productUrl)}`, 'debug');
+    log(`🏙️ [SMART] Город ID: ${cityId}`, 'debug');
+    
+    // 📋 Устанавливаем профессиональные заголовки
+    const professionalHeaders = {
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+      'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache',
+      'Sec-Ch-Ua': '"Chromium";v="136", "Not_A Brand";v="24", "Google Chrome";v="136"',
+      'Sec-Ch-Ua-Mobile': '?0',
+      'Sec-Ch-Ua-Platform': '"Windows"',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      'Upgrade-Insecure-Requests': '1',
+      'DNT': '1'
+    };
+    
+    await page.setExtraHTTPHeaders(professionalHeaders);
+    log(`✅ [SMART] Установлено ${Object.keys(professionalHeaders).length} заголовков`, 'debug');
+    
+    // 🎯 [ШАГ 1] ПРЯМОЙ ПЕРЕХОД К ТОВАРУ
+    log(`🛒 [SMART] Шаг 1: Прямой переход к товару...`, 'info');
+    
+    const firstAttemptStart = Date.now();
+    const firstResponse = await page.goto(productUrl, { 
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    });
+    
+    const firstStatus = firstResponse ? firstResponse.status() : 'unknown';
+    const firstDuration = Date.now() - firstAttemptStart;
+    
+    log(`📊 [SMART] Первый запрос: статус ${firstStatus}, время ${firstDuration}ms`, 'info');
+    
+    // ✅ Если сразу 200 - отлично!
+    if (firstStatus === 200) {
+      log(`✅ [SMART] Товар загружен сразу! Проверяем город...`, 'success');
+      
+      // Проверяем нужна ли установка города
+      const needsCitySetup = await checkIfCitySetupNeeded(page, cityId);
+      if (needsCitySetup) {
+        log(`🏙️ [SMART] Требуется установка города...`, 'info');
+        const cityResult = await setupCityIfNeeded(page, cityId);
+        if (!cityResult.success) {
+          log(`❌ [SMART] Не удалось установить город: ${cityResult.reason}`, 'warning');
+        }
+      }
+      
+      return { 
+        success: true, 
+        needsProxy: false, 
+        stage: 'direct_success', 
+        status: 200,
+        reason: 'DIRECT_ACCESS_SUCCESS'
+      };
+    }
+    
+    // 🚫 Если 403 - запускаем алгоритм прогрева
+    if (firstStatus === 403) {
+      log(`🔥 [SMART] HTTP 403 обнаружен - запускаем прогрев антибота...`, 'warning');
+      
+      // Ждем выполнения антибот скриптов (3-5 секунд)
+      const waitTime = Math.floor(Math.random() * 2000) + 3000; // 3-5 сек
+      log(`⏰ [SMART] Ожидание выполнения антибот скриптов: ${waitTime}ms`, 'debug');
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      
+      // 🎯 [ШАГ 2] ПОВТОРНЫЙ ЗАПРОС ПОСЛЕ ПРОГРЕВА
+      log(`🔄 [SMART] Шаг 2: Повторный запрос после прогрева...`, 'info');
+      
+      const secondAttemptStart = Date.now();
+      const secondResponse = await page.goto(productUrl, { 
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      });
+      
+      const secondStatus = secondResponse ? secondResponse.status() : 'unknown';
+      const secondDuration = Date.now() - secondAttemptStart;
+      
+      log(`📊 [SMART] Второй запрос: статус ${secondStatus}, время ${secondDuration}ms`, 'info');
+      
+      // ✅ Если теперь 200 - прогрев сработал!
+      if (secondStatus === 200) {
+        log(`🎉 [SMART] Прогрев успешен! Проверяем город...`, 'success');
+        
+        // Проверяем нужна ли установка города
+        const needsCitySetup = await checkIfCitySetupNeeded(page, cityId);
+        if (needsCitySetup) {
+          log(`🏙️ [SMART] Требуется установка города...`, 'info');
+          const cityResult = await setupCityIfNeeded(page, cityId);
+          if (!cityResult.success) {
+            log(`❌ [SMART] Не удалось установить город: ${cityResult.reason}`, 'warning');
+          }
+        }
+        
+        return { 
+          success: true, 
+          needsProxy: false, 
+          stage: 'warmup_success', 
+          status: 200,
+          reason: 'WARMUP_SUCCESS'
+        };
+      }
+      
+      // 🚫 Если все еще 403 - нужен прокси
+      if (secondStatus === 403) {
+        log(`🔴 [SMART] Повторный 403 - требуется прокси`, 'warning');
+        
+        if (proxyHandler) {
+          const shouldUseProxy = proxyHandler.registerProtectionHit();
+          log(`🔒 [SMART] Защита зарегистрирована. Total hits: ${proxyHandler.getProtectionHitCount()}, Should use proxy: ${shouldUseProxy}`, 'proxy');
+          
+          return { 
+            success: false, 
+            needsProxy: shouldUseProxy, 
+            stage: 'repeated_403', 
+            status: 403,
+            reason: 'REPEATED_HTTP_403_AFTER_WARMUP'
+          };
+        }
+        
+        return { 
+          success: false, 
+          needsProxy: true, 
+          stage: 'repeated_403', 
+          status: 403,
+          reason: 'REPEATED_HTTP_403_NO_PROXY_HANDLER'
+        };
+      }
+    }
+    
+    // 🚫 Другие ошибки
+    log(`❌ [SMART] Неожиданный статус: ${firstStatus}`, 'error');
+    return { 
+      success: false, 
+      needsProxy: false, 
+      stage: 'unexpected_status', 
+      status: firstStatus,
+      reason: `UNEXPECTED_STATUS_${firstStatus}`
+    };
+    
+  } catch (error) {
+    log(`⚠️ [SMART] Ошибка умной навигации: ${error.message}`, 'error');
+    return { 
+      success: false, 
+      needsProxy: false, 
+      stage: 'error', 
+      status: 'error', 
+      reason: error.message 
+    };
+  }
+};
+
+/**
+ * Проверяет нужна ли установка города
+ * @param {Object} page - Puppeteer page
+ * @param {number} expectedCityId - Ожидаемый ID города
+ * @returns {Promise<boolean>} - true если нужна установка города
+ */
+const checkIfCitySetupNeeded = async (page, expectedCityId) => {
+  try {
+    // Проверяем URL на наличие правильного города
+    const currentUrl = page.url();
+    
+    // Если URL содержит represent_id отличный от ожидаемого
+    const urlParams = new URL(currentUrl).searchParams;
+    const currentCityId = urlParams.get('represent_id');
+    
+    if (currentCityId && parseInt(currentCityId) !== expectedCityId) {
+      log(`🏙️ [CITY-CHECK] Текущий город ${currentCityId}, требуется ${expectedCityId}`, 'debug');
+      return true;
+    }
+    
+    // Проверяем есть ли в DOM индикатор неправильного города
+    const hasWrongCity = await page.evaluate((expectedId) => {
+      // Ищем элементы которые указывают на город
+      const citySelectors = [
+        '[data-represent-id]',
+        '.city-selector',
+        '.location-indicator'
+      ];
+      
+      for (const selector of citySelectors) {
+        const element = document.querySelector(selector);
+        if (element) {
+          const currentId = element.getAttribute('data-represent-id') || 
+                           element.getAttribute('data-city-id') ||
+                           element.textContent;
+          
+          if (currentId && parseInt(currentId) !== expectedId) {
+            return true;
+          }
+        }
+      }
+      
+      return false;
+    }, expectedCityId);
+    
+    return hasWrongCity;
+    
+  } catch (error) {
+    log(`❌ [CITY-CHECK] Ошибка проверки города: ${error.message}`, 'debug');
+    return false; // В случае ошибки считаем что город не нужен
+  }
+};
+
+/**
+ * Устанавливает город если нужно
+ * @param {Object} page - Puppeteer page
+ * @param {number} cityId - ID города
+ * @returns {Promise<Object>} - Результат установки города
+ */
+const setupCityIfNeeded = async (page, cityId) => {
+  try {
+    const cityUrl = `https://www.vseinstrumenti.ru/represent/change/?represent_id=${cityId}`;
+    log(`🏙️ [CITY-SETUP] Переходим к: ${shortenUrl(cityUrl)}`, 'debug');
+    
+    const cityResponse = await page.goto(cityUrl, { 
+      waitUntil: 'domcontentloaded',
+      timeout: 30000 
+    });
+    
+    const cityStatus = cityResponse ? cityResponse.status() : 'unknown';
+    
+    if (cityStatus === 200 || cityStatus === 302) {
+      log(`✅ [CITY-SETUP] Город установлен успешно (статус: ${cityStatus})`, 'info');
+      
+      // Ждем применения настроек
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      return { success: true, status: cityStatus };
+    } else {
+      log(`❌ [CITY-SETUP] Ошибка установки города (статус: ${cityStatus})`, 'warning');
+      return { success: false, status: cityStatus, reason: `HTTP_${cityStatus}` };
+    }
+    
+  } catch (error) {
+    log(`❌ [CITY-SETUP] Ошибка: ${error.message}`, 'error');
+    return { success: false, reason: error.message };
+  }
 };
