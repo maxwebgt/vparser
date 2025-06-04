@@ -132,6 +132,58 @@ export const setupLogger = () => {
   return { log };
 };
 
+/**
+ * Сокращает длинные URL для логов
+ */
+export function shortenUrl(url, maxLength = 150) {
+  if (!url || typeof url !== 'string') return url || '';
+  
+  // Base64 данные
+  if (url.startsWith('data:')) {
+    return '[data]';
+  }
+  
+  // Если короткий - оставляем как есть
+  if (url.length <= maxLength) return url;
+  
+  // Просто обрезаем длинные URL
+  return url.substring(0, maxLength) + '...';
+}
+
+/**
+ * Пропускаем лишние запросы
+ */
+export function shouldSkipRequestLog(url) {
+  if (!url) return true;
+  if (url.startsWith('data:')) return true;
+  if (url.includes('.css') || url.includes('.js') || url.includes('.svg')) {
+    if (!global.staticCount) global.staticCount = 0;
+    global.staticCount++;
+    return global.staticCount > 3; // Показываем только первые 3 статических файла
+  }
+  return false;
+}
+
+/**
+ * Логирование сетевых запросов
+ */
+export function logNetworkRequest(direction, method, url, status = null, type = 'NET') {
+  if (shouldSkipRequestLog(url)) return;
+  
+  const shortUrl = shortenUrl(url, 120);
+  const arrow = direction === 'OUT' ? '📤' : '📥';
+  const statusText = status ? ` ${status}` : '';
+  
+  log(`${arrow} [${type}]${statusText} ${method} ${shortUrl}`, 'debug');
+}
+
+/**
+ * Сброс счетчиков
+ */
+export function resetSessionCounters() {
+  global.staticCount = 0;
+}
+
 export default {
   log,
   setupLogger

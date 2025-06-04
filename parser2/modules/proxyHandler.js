@@ -23,14 +23,9 @@ export class ProxyHandler {
   }
 
   /**
-   * Initialize the proxy handler by fetching proxies from WebShare
+   * Initialize the proxy handler by fetching proxies from WebShare - как в index.js
    */
   async initialize() {
-    if (!PROXY_CONFIG.useProxy) {
-      log('Proxy usage is disabled in configuration', 'proxy');
-      return false;
-    }
-
     try {
       log('Initializing proxy handler...', 'proxy');
       const proxies = await this.fetchProxiesFromWebShare();
@@ -50,297 +45,210 @@ export class ProxyHandler {
   }
 
   /**
-   * Fetch proxies from WebShare.io API
+   * Fetch proxies from WebShare.io API - используем точно такую же логику как в index.js
    */
   async fetchProxiesFromWebShare() {
     try {
       log('Fetching proxies from WebShare.io...', 'proxy');
       
+      // Используем тот же API ключ что и в index.js
+      const WEBSHARE_API_KEY = 'qf8qedpyxethbo8qjdhiol5r4js7lm8jmcs59pkf';
+      
       // Log the API key for debugging (hide most of it)
-      const apiKeySafe = PROXY_CONFIG.apiKey.length > 8 
-        ? PROXY_CONFIG.apiKey.substring(0, 4) + '...' + PROXY_CONFIG.apiKey.substring(PROXY_CONFIG.apiKey.length - 4)
+      const apiKeySafe = WEBSHARE_API_KEY.length > 8 
+        ? WEBSHARE_API_KEY.substring(0, 4) + '...' + WEBSHARE_API_KEY.substring(WEBSHARE_API_KEY.length - 4)
         : '****';
       log(`Using WebShare API key: ${apiKeySafe}`, 'proxy');
       
-      // Try the simpler API endpoint first (similar to proxyManager.js approach)
-      let response = await fetch('https://proxy.webshare.io/api/proxy/list/', {
-        method: 'GET',
+      // Используем точно такой же endpoint как в index.js
+      const apiUrl = 'https://proxy.webshare.io/api/proxy/list/';
+      
+      log(`API URL: ${apiUrl}`, 'debug');
+      log(`API Key length: ${WEBSHARE_API_KEY ? WEBSHARE_API_KEY.length : 0} chars`, 'debug');
+      
+      const response = await fetch(apiUrl, {
         headers: {
-          'Authorization': `Token ${PROXY_CONFIG.apiKey}`
+          'Authorization': `Token ${WEBSHARE_API_KEY}`
         }
       });
 
-      // If that fails, try the v2 API with correct parameters
       if (!response.ok) {
-        log(`First API attempt failed (${response.status}). Trying v2 endpoint...`, 'proxy');
-        
-        response = await fetch('https://proxy.webshare.io/api/v2/proxy/list/', {
-          method: 'GET',
-          headers: {
-            'Authorization': `Token ${PROXY_CONFIG.apiKey}`
-          }
-        });
-        
-        // If that also fails, try with mode as query parameter (not in body)
-        if (!response.ok) {
-          log(`Second API attempt failed (${response.status}). Trying with mode parameter...`, 'proxy');
-          
-          response = await fetch('https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page=1&page_size=25', {
-            method: 'GET',
-            headers: {
-              'Authorization': `Token ${PROXY_CONFIG.apiKey}`
-            }
-          });
-        }
-      }
-
-      // Log response status for debugging
-      log(`WebShare API response status: ${response.status} ${response.statusText}`, 'proxy');
-
-      if (!response.ok) {
-        // Try to extract error details from response
-        let errorDetails = '';
-        try {
-          const errorData = await response.json();
-          errorDetails = JSON.stringify(errorData);
-        } catch (e) {
-          // If we can't parse JSON, use text instead
-          errorDetails = await response.text();
-        }
-        
-        throw new Error(`WebShare API error: ${response.status} ${response.statusText} - ${errorDetails}`);
+        const errorMsg = `API responded with status ${response.status}`;
+        const responseText = await response.text();
+        log(`Proxy API error: ${errorMsg}`, 'error');
+        log(`Response body: ${responseText.substring(0, 200)}...`, 'debug');
+        return [];
       }
 
       const data = await response.json();
       
-      // Log just the count and first proxy as sample (not all proxies)
-      log(`API Response: Found ${data.count || (data.results ? data.results.length : 0)} proxies`, 'proxy');
-      
-      // Better debugging of response structure with just one proxy as sample
-      if (data.results && data.results.length > 0) {
-        const sampleProxy = data.results[0];
-        log(`Sample proxy structure: ${JSON.stringify(sampleProxy)}`, 'proxy');
-      }
-      
-      // Check if we have results directly or in a results array
-      const proxyList = data.results || data;
-      
-      if (!Array.isArray(proxyList) || proxyList.length === 0) {
-        throw new Error('Invalid or empty response from WebShare API');
-      }
-
-      const proxies = proxyList.map(proxy => {
-        // Fix: Check for ports in nested object (WebShare v2 API) vs direct port
-        const httpPort = proxy.ports?.http || proxy.port_http || proxy.port;
-        
-        // Validate each proxy has required fields
-        if (!proxy.proxy_address && !proxy.ip) {
-          log(`Skipping proxy with missing address`, 'warning');
-          return null;
-        }
-        
-        if (!httpPort) {
-          log(`Skipping proxy with missing port`, 'warning');
-          return null;
-        }
+      // Используем точно такую же логику парсинга как в index.js
+      const proxies = (data.results || []).map(proxy => {
+        const port = proxy.ports && proxy.ports.http ? proxy.ports.http : 0;
         
         return {
-          host: proxy.proxy_address || proxy.ip,
-          port: parseInt(httpPort, 10), // Use the correctly extracted port
-          username: proxy.username,
-          password: proxy.password,
+          host: proxy.proxy_address || '',
+          port: port,
+          username: proxy.username || '',
+          password: proxy.password || '',
           protocol: 'http',
-          country: proxy.country_code || proxy.country || 'Unknown',
+          country: proxy.country_code || 'Unknown',
+          failed: false,
           lastUsed: null,
           workingStatus: null,
           failCount: 0
         };
-      }).filter(proxy => proxy !== null); // Remove nulls
+      });
 
-      log(`Fetched ${proxies.length} valid proxies from WebShare`, 'proxy');
+      // Фильтруем только валидные прокси
+      const validProxies = proxies.filter(p => p.host && p.port > 0 && p.username && p.password);
+
+      log(`Successfully fetched ${validProxies.length} valid proxies from Webshare.io`, 'proxy');
+      console.log(`PROXY FETCH COMPLETED SUCCESSFULLY: Found ${validProxies.length} valid proxies`);
       
-      // No need to log each individual proxy
-      return proxies;
+      return validProxies;
     } catch (error) {
-      log(`Error fetching proxies: ${error.message}`, 'error');
+      log(`PROXY ERROR: ${error.message}`, 'error');
+      log(`Error stack: ${error.stack}`, 'debug');
       return [];
     }
   }
 
   /**
-   * Test if a proxy works by connecting to example.org
+   * Test if a proxy works - используем точно такую же логику как в index.js
    */
   async testProxy(proxyConfig) {
     try {
-      // Ensure we have all required fields
-      if (!proxyConfig.host || !proxyConfig.port || !proxyConfig.username || !proxyConfig.password) {
-        log(`Cannot test proxy with missing data: ${JSON.stringify(proxyConfig)}`, 'error');
+      if (!proxyConfig || !proxyConfig.host || !proxyConfig.port) {
+        log(`Invalid proxy configuration: ${JSON.stringify(proxyConfig)}`, 'debug');
         return false;
       }
       
-      log(`Testing proxy ${proxyConfig.host}:${proxyConfig.port}...`, 'proxy');
+      log(`Testing proxy ${proxyConfig.host}:${proxyConfig.port}`, 'proxy');
       
-      // Try both testing methods
-      const puppeteerSuccess = await this.testProxyWithPuppeteer(proxyConfig);
-      if (puppeteerSuccess) {
-        return true;
-      }
-      
-      // If puppeteer test fails, try fetch method
-      log(`Puppeteer test failed, trying fetch method...`, 'proxy');
-      return await this.testProxyWithFetch(proxyConfig);
-    } catch (error) {
-      log(`Proxy ${proxyConfig.host} test failed: ${error.message}`, 'error');
-      return false;
-    }
-  }
-
-  /**
-   * Test proxy using Puppeteer
-   */
-  async testProxyWithPuppeteer(proxyConfig) {
-    try {
-      // Using Puppeteer to test the proxy
       const puppeteer = (await import('puppeteer')).default;
       const browser = await puppeteer.launch({
         headless: 'new',
         args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
           `--proxy-server=${proxyConfig.host}:${proxyConfig.port}`
         ]
       });
-
-      const page = await browser.newPage();
       
-      // Set proxy authentication
-      await page.authenticate({
-        username: proxyConfig.username,
-        password: proxyConfig.password
-      });
-
-      // Test with a simple request to example.org
-      for (const testUrl of PROXY_CONFIG.testUrls) {
-        try {
-          log(`Testing proxy with URL: ${testUrl}`, 'debug');
-          await page.goto(testUrl, {
-            waitUntil: 'domcontentloaded',
-            timeout: 12000
-          });
-          
-          // Check if we got a valid response
-          const title = await page.title();
-          log(`Page title: ${title}`, 'debug');
-          
-          await browser.close();
-          log(`Proxy ${proxyConfig.host} is working correctly (Puppeteer)`, 'proxy');
-          return true;
-        } catch (e) {
-          log(`Failed to test with ${testUrl}: ${e.message}`, 'debug');
-          // Try next URL
-        }
+      try {
+        const page = await browser.newPage();
+        
+        await page.authenticate({
+          username: proxyConfig.username,
+          password: proxyConfig.password
+        });
+        
+        log(`Authenticated with proxy ${proxyConfig.host}:${proxyConfig.port}`, 'debug');
+        
+        const response = await page.goto('https://example.org', { 
+          waitUntil: 'domcontentloaded',
+          timeout: 30000  // Увеличиваем timeout для медленных прокси
+        });
+        
+        const status = response.status();
+        const isSuccess = status === 200;
+        
+        log(`Proxy test ${isSuccess ? 'successful' : 'failed'}: ${proxyConfig.host}:${proxyConfig.port} (status: ${status})`, 'proxy');
+        return isSuccess;
+      } finally {
+        await browser.close();
       }
-      
-      await browser.close();
-      return false;
     } catch (error) {
-      log(`Puppeteer test failed: ${error.message}`, 'debug');
+      log(`Proxy test failed for ${proxyConfig.host}:${proxyConfig.port}: ${error.message}`, 'debug');
+      this.markProxyAsFailed(proxyConfig);
       return false;
     }
   }
 
-  /**
-   * Test proxy using fetch and HttpsProxyAgent
-   */
-  async testProxyWithFetch(proxyConfig) {
-    try {
-      const proxyUrl = `http://${proxyConfig.username}:${proxyConfig.password}@${proxyConfig.host}:${proxyConfig.port}`;
-      const proxyAgent = new HttpsProxyAgent(proxyUrl);
-      
-      // Test with a simple request
-      const controller = new AbortController();
-      const signal = controller.signal;
-      
-      // Set a timeout
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
-      
-      for (const testUrl of PROXY_CONFIG.testUrls) {
-        try {
-          log(`Testing proxy with fetch to ${testUrl}`, 'debug');
-          const response = await fetch(testUrl, {
-            signal,
-            agent: proxyAgent,
-            timeout: 10000
-          });
-          
-          clearTimeout(timeoutId);
-          
-          if (response.status === 200) {
-            log(`Proxy ${proxyConfig.host} is working correctly (Fetch)`, 'proxy');
-            return true;
-          }
-        } catch (e) {
-          log(`Fetch test to ${testUrl} failed: ${e.message}`, 'debug');
-          // Try next URL
-        }
-      }
-      
-      return false;
-    } catch (error) {
-      log(`Fetch test failed: ${error.message}`, 'debug');
-      return false;
-    }
-  }
+
+
+
 
   /**
-   * Get the next working proxy
+   * Get next working proxy - используем логику как в index.js
    */
   async getNextWorkingProxy() {
-    if (!this.isInitialized || this.proxyList.length === 0) {
-      if (!this.isInitialized) {
-        const initialized = await this.initialize();
-        if (!initialized) {
-          return null;
-        }
-      } else {
+    log('Getting next working proxy', 'debug');
+    
+    if (this.proxyList.length === 0) {
+      const proxies = await this.fetchProxiesFromWebShare();
+      if (proxies.length === 0) {
+        log('No proxies available', 'error');
         return null;
       }
+      this.proxyList = proxies;
     }
-
-    // Find a working proxy
-    for (let i = 0; i < this.proxyList.length; i++) {
-      // Rotate to the next proxy
-      this.currentProxyIndex = (this.currentProxyIndex + 1) % this.proxyList.length;
+    
+    let attempts = 0;
+    const maxAttempts = this.proxyList.length;
+    
+    while (attempts < maxAttempts) {
+      if (this.currentProxyIndex >= this.proxyList.length) {
+        this.currentProxyIndex = 0;
+      }
+      
       const proxy = this.proxyList[this.currentProxyIndex];
-
-      // If testing is enabled, check if proxy works
-      if (PROXY_CONFIG.testBeforeUse) {
-        if (proxy.workingStatus === null || proxy.failCount > 0) {
-          // Test the proxy if it hasn't been tested or previously failed
-          const isWorking = await this.testProxy(proxy);
-          proxy.workingStatus = isWorking;
-          
-          if (isWorking) {
-            proxy.failCount = 0;
-            proxy.lastUsed = new Date();
-            return proxy;
-          } else {
-            proxy.failCount++;
-            continue; // Try the next proxy
-          }
-        } else {
-          // Use a previously tested working proxy
-          proxy.lastUsed = new Date();
-          return proxy;
+      this.currentProxyIndex++;
+      attempts++;
+      
+      if (!proxy.failed) {
+        proxy.lastUsed = Date.now();
+        log(`Selected proxy: ${proxy.host}:${proxy.port} with auth ${proxy.username}:***`, 'proxy');
+        
+        if (!proxy.host || !proxy.port || !proxy.username || !proxy.password) {
+          log(`Invalid proxy configuration: ${JSON.stringify({
+            hasHost: !!proxy.host,
+            hasPort: !!proxy.port,
+            hasUsername: !!proxy.username,
+            hasPassword: !!proxy.password
+          })}`, 'debug');
+          proxy.failed = true;
+          continue;
         }
-      } else {
-        // If testing is disabled, just use the next proxy
-        proxy.lastUsed = new Date();
+        
         return proxy;
       }
     }
-
-    // If we've gone through all proxies and none work
-    log('No working proxies found after checking all available proxies', 'error');
+    
+    log('All proxies have failed, resetting failure status', 'warning');
+    this.proxyList.forEach(proxy => {
+      proxy.failed = false;
+    });
+    
+    const firstProxy = this.proxyList[0];
+    if (firstProxy) {
+      firstProxy.lastUsed = Date.now();
+      log(`Reset all proxies, using: ${firstProxy.host}:${firstProxy.port}`, 'proxy');
+      return firstProxy;
+    }
+    
+    log('No valid proxies found even after reset', 'error');
     return null;
+  }
+
+  /**
+   * Mark a proxy as failed - используем логику как в index.js
+   */
+  markProxyAsFailed(proxy, reason = 'PROXY_FAILED') {
+    if (!proxy) return;
+    
+    proxy.failed = true;
+    proxy.failCount = (proxy.failCount || 0) + 1;
+    proxy.lastFailTime = Date.now();
+    proxy.workingStatus = false;
+    
+    const countryEmoji = getCountryEmoji(proxy.country);
+    log(`Marked proxy ${countryEmoji} ${proxy.host}:${proxy.port} as failed (reason: ${reason}, fails: ${proxy.failCount})`, 'proxy');
+    
+    // Обновляем статистику
+    this.trackProxyUsage(proxy, false);
   }
 
   /**

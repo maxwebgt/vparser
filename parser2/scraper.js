@@ -12,7 +12,7 @@ import * as dataExtractor from './modules/dataExtractor.js';
 import { connectToDatabase, closeDatabaseConnection, isDatabaseConnected } from './modules/db.js';
 import ProductModel from './modules/product.js';
 import { updateProductInDatabase } from './modules/databaseHandler.js';
-import { log, setupLogger } from './modules/logger.js';
+import { log, setupLogger, shortenUrl, logNetworkRequest, resetSessionCounters } from './modules/logger.js';
 import { getProxyHandler, getCountryEmoji } from './modules/proxyHandler.js';
 import { getMetricsTracker } from './modules/metrics.js';
 import { PROXY_CONFIG } from './modules/config.js';
@@ -734,12 +734,13 @@ const clearCookiesForDomain = async (page, domain = 'vseinstrumenti.ru') => {
  * @param {Object} page - Puppeteer page объект  
  * @param {string} targetUrl - Финальный URL товара
  * @param {number} cityId - ID города для установки
- * @returns {Promise<boolean>} - True если навигация успешна
+ * @param {Object} proxyHandler - Обработчик прокси для регистрации защиты
+ * @returns {Promise<Object>} - Объект с результатом навигации
  */
-const performThreeStageNavigation = async (page, targetUrl, cityId = CITY_CONFIG.representId) => {
+const performThreeStageNavigation = async (page, targetUrl, cityId = CITY_CONFIG.representId, proxyHandler = null) => {
   try {
     log(`🚀 [3-STAGE] === ТРЕХЭТАПНАЯ НАВИГАЦИЯ ===`, 'info');
-    log(`🎯 [3-STAGE] Целевой URL: ${targetUrl}`, 'debug');
+    log(`🎯 [3-STAGE] Целевой URL: ${shortenUrl(targetUrl)}`, 'debug');
     log(`🏙️ [3-STAGE] Город ID: ${cityId}`, 'debug');
     
     // 📋 [HEADERS] Критически важные заголовки - ТОЧНО КАК В INDEX.JS!
@@ -935,8 +936,24 @@ const performThreeStageNavigation = async (page, targetUrl, cityId = CITY_CONFIG
     log(`✅ [STAGE 1/3] Главная загружена за ${Date.now() - homePageStart}ms, статус: ${homeStatus}`, 'info');
     
     if (homeStatus === 403) {
+      log(`🚫 [STAGE 1/3] HTTP 403 обнаружен - регистрируем защиту бота`, 'warning');
+      
+      // Регистрируем защиту бота если передан proxyHandler
+      if (proxyHandler) {
+        const shouldUseProxy = proxyHandler.registerProtectionHit();
+        log(`🔒 [STAGE 1/3] Защита зарегистрирована. Total hits: ${proxyHandler.getProtectionHitCount()}, Should use proxy: ${shouldUseProxy}`, 'proxy');
+        
+        return { 
+          success: false, 
+          needsProxy: shouldUseProxy, 
+          stage: 'home', 
+          status: 403,
+          reason: 'HTTP_403_ON_HOME_PAGE'
+        };
+      }
+      
       log(`❌ [STAGE 1/3] Главная заблокирована: HTTP 403 - ПРОПУСКАЕМ 3-STAGE навигацию`, 'warning');
-      return false; // Это вызовет fallback к двухэтапной навигации
+      return { success: false, needsProxy: false, stage: 'home', status: 403, reason: 'HTTP_403_NO_PROXY_HANDLER' };
     }
     
     // Имитируем просмотр главной
@@ -949,7 +966,7 @@ const performThreeStageNavigation = async (page, targetUrl, cityId = CITY_CONFIG
     
     const citySetupStart = Date.now();
     const cityUrl = `https://www.vseinstrumenti.ru/represent/change/?represent_id=${cityId}`;
-    log(`🏙️ [STAGE 2/3] URL установки города: ${cityUrl}`, 'debug');
+    log(`🏙️ [STAGE 2/3] URL установки города: ${shortenUrl(cityUrl)}`, 'debug');
     
     const cityResponse = await page.goto(cityUrl, { 
       waitUntil: 'domcontentloaded',
@@ -959,7 +976,27 @@ const performThreeStageNavigation = async (page, targetUrl, cityId = CITY_CONFIG
     const cityStatus = cityResponse ? cityResponse.status() : 'unknown';
     const cityFinalUrl = page.url();
     log(`✅ [STAGE 2/3] Город установлен за ${Date.now() - citySetupStart}ms, статус: ${cityStatus}`, 'info');
-    log(`🔍 [STAGE 2/3] Финальный URL: ${cityFinalUrl.substring(0, 100)}...`, 'debug');
+    log(`🔍 [STAGE 2/3] Финальный URL: ${shortenUrl(cityFinalUrl)}`, 'debug');
+    
+    // Проверяем статус этапа города
+    if (cityStatus === 403) {
+      log(`🚫 [STAGE 2/3] HTTP 403 на этапе города - регистрируем защиту бота`, 'warning');
+      
+      if (proxyHandler) {
+        const shouldUseProxy = proxyHandler.registerProtectionHit();
+        log(`🔒 [STAGE 2/3] Защита зарегистрирована. Total hits: ${proxyHandler.getProtectionHitCount()}, Should use proxy: ${shouldUseProxy}`, 'proxy');
+        
+        return { 
+          success: false, 
+          needsProxy: shouldUseProxy, 
+          stage: 'city', 
+          status: 403,
+          reason: 'HTTP_403_ON_CITY_PAGE'
+        };
+      }
+      
+      return { success: false, needsProxy: false, stage: 'city', status: 403, reason: 'HTTP_403_ON_CITY_NO_PROXY_HANDLER' };
+    }
     
     // Ждем установки кук
     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -975,11 +1012,11 @@ const performThreeStageNavigation = async (page, targetUrl, cityId = CITY_CONFIG
     });
     
     log(`✅ [3-STAGE] Трехэтапная навигация завершена успешно!`, 'success');
-    return true;
+    return { success: true, needsProxy: false, stage: 'completed', status: 200, reason: 'SUCCESS' };
     
   } catch (error) {
     log(`⚠️ [3-STAGE] Ошибка трехэтапной навигации: ${error.message}`, 'error');
-    return false;
+    return { success: false, needsProxy: false, stage: 'error', status: 'error', reason: error.message };
   }
 };
 
@@ -989,15 +1026,28 @@ const performThreeStageNavigation = async (page, targetUrl, cityId = CITY_CONFIG
  * @param {Object} page - Puppeteer page object
  * @param {string} url - URL to navigate to
  * @param {Object} options - Navigation options
- * @returns {Promise<boolean>} - True if navigation succeeded
+ * @returns {Promise<Object>} - Navigation result with status information
  */
 const safeNavigate = async (page, url, options = {}) => {
   try {
-    await page.goto(url, options);
-    return true;
+    const response = await page.goto(url, options);
+    const status = response ? response.status() : 'unknown';
+    
+    return { 
+      success: true, 
+      status: status,
+      url: page.url(),
+      response: response
+    };
   } catch (e) {
     log(`Navigation error: ${e.message}`, 'error');
-    return false;
+    return { 
+      success: false, 
+      status: 'error',
+      url: url,
+      error: e.message,
+      response: null
+    };
   }
 };
 
@@ -1188,12 +1238,12 @@ const createBrowser = async (headless = true, proxy = null) => {
 
   // Add proxy configuration if provided
   if (proxy) {
-    log(`Using proxy: ${proxy.host}:${proxy.port} (${proxy.country})`, 'proxy');
+    log(`🌐 [PROXY-SETUP] Настраиваем прокси: ${proxy.host}:${proxy.port} (${proxy.country})`, 'proxy');
     launchOptions.args.push(`--proxy-server=${proxy.host}:${proxy.port}`);
     
-    // Add proxy authorization in a more compatible way
-    const proxyAuth = `${proxy.username}:${proxy.password}`;
-    launchOptions.args.push(`--proxy-auth=${proxyAuth}`);
+    // НЕ используем --proxy-auth флаг (он не поддерживается в современном Chrome)
+    // Аутентификация будет происходить через page.authenticate()
+    log(`🔐 [PROXY-SETUP] Аутентификация будет выполнена через page.authenticate()`, 'debug');
   }
 
   // 🚨 [DBUS-AWARE LINUX FIX] Правильная настройка D-Bus и окружения для Linux серверов
@@ -1224,6 +1274,8 @@ const createBrowser = async (headless = true, proxy = null) => {
   
   // If we're using a proxy, we'll also set up a global proxy auth listener
   if (proxy) {
+    log(`🔐 [PROXY-DEBUG] Настраиваем глобальный обработчик аутентификации для ${proxy.host}:${proxy.port}`, 'debug');
+    
     browserInstance.on('targetcreated', async (target) => {
       try {
         const page = await target.page();
@@ -1233,9 +1285,31 @@ const createBrowser = async (headless = true, proxy = null) => {
             username: proxy.username,
             password: proxy.password
           });
+          log(`🔐 [PROXY-DEBUG] Аутентификация установлена для новой страницы`, 'debug');
+          
+          // СОКРАЩЕННОЕ ЛОГИРОВАНИЕ СЕТЕВЫХ ЗАПРОСОВ
+          page.on('request', (request) => {
+            logNetworkRequest('OUT', request.method(), request.url(), null, 'NET');
+            if (request.headers()['proxy-authorization']) {
+              log(`🔐 [NET-REQUEST] Proxy-Authorization присутствует`, 'debug');
+            }
+          });
+          
+          page.on('requestfailed', (request) => {
+            log(`❌ [NET-FAILED] ${request.method()} ${shortenUrl(request.url())} - ${request.failure().errorText}`, 'error');
+          });
+          
+          page.on('response', (response) => {
+            if (response.url().includes('vseinstrumenti.ru')) {
+              logNetworkRequest('IN', response.request().method(), response.url(), response.status(), 'NET');
+              if (response.status() === 403) {
+                log(`🚫 [NET-403] Заголовки ответа получены`, 'debug');
+              }
+            }
+          });
         }
       } catch (err) {
-        log(`Error setting global auth handler: ${err.message}`, 'debug');
+        log(`❌ [PROXY-DEBUG] Ошибка настройки обработчика: ${err.message}`, 'error');
       }
     });
   }
@@ -1301,6 +1375,9 @@ const fetchProductsFromDatabase = async (limit = 0) => {
 // Process products from database
 const processProducts = async (headless = true, limit = 0) => {
   try {
+    // Сбрасываем счетчики для новой сессии
+    resetSessionCounters();
+    
     // Start timing the entire process
     const scriptStartTime = new Date();
     
@@ -1386,7 +1463,7 @@ const processProducts = async (headless = true, limit = 0) => {
       const product = productsToScrape[i];
       const { id, name, url, isCompetitor, competitorIndex } = product;
       
-      log(`[${i+1}/${productsToScrape.length}] Processing: ${url} (${isCompetitor ? 'Competitor' : 'Main Product'})`, 'info');
+      log(`[${i+1}/${productsToScrape.length}] Processing: ${shortenUrl(url)} (${isCompetitor ? 'Competitor' : 'Main Product'})`, 'info');
       
       let extractedData = {
         name: null,
@@ -1403,16 +1480,49 @@ const processProducts = async (headless = true, limit = 0) => {
       // Track if we've already switched to a proxy to avoid multiple switches
       let triedWithProxy = false;
       
+      // Лимит попыток с прокси на товар (чтобы не зацикливаться на "сожженных" прокси)
+      let proxyAttempts = 0;
+      const MAX_PROXY_ATTEMPTS = 3;
+      
       // Get a new page
       let page = await localBrowser.newPage();
       
       // Set proxy authentication immediately if using a proxy
       if (currentProxy) {
+        log(`🔐 [PROXY-DEBUG] Начинаем аутентификацию прокси ${currentProxy.host}:${currentProxy.port}`, 'debug');
+        log(`🔐 [PROXY-DEBUG] Username: ${currentProxy.username}, Password length: ${currentProxy.password?.length || 0}`, 'debug');
+        
         await page.authenticate({
           username: currentProxy.username,
           password: currentProxy.password
         });
-        log(`Setting proxy authentication for ${currentProxy.host}:${currentProxy.port}`, 'debug');
+        
+        log(`🔐 [PROXY-DEBUG] Аутентификация прокси установлена успешно`, 'debug');
+        
+        // СОКРАЩЕННОЕ ЛОГИРОВАНИЕ СЕТЕВЫХ ЗАПРОСОВ ДЛЯ ОСНОВНОЙ СТРАНИЦЫ
+        page.on('request', (request) => {
+          logNetworkRequest('OUT', request.method(), request.url(), null, 'MAIN');
+          const headers = request.headers();
+          if (headers['proxy-authorization']) {
+            log(`🔐 [MAIN-REQUEST] Proxy-Authorization установлен`, 'debug');
+          }
+        });
+        
+        page.on('requestfailed', (request) => {
+          log(`❌ [MAIN-FAILED] ${request.method()} ${shortenUrl(request.url())} - ${request.failure().errorText}`, 'error');
+          if (request.failure().errorText.includes('ERR_TUNNEL_CONNECTION_FAILED')) {
+            log(`🔴 [PROXY-ERROR] Прокси ${currentProxy.host}:${currentProxy.port} не может установить туннель!`, 'error');
+          }
+        });
+        
+        page.on('response', (response) => {
+          if (response.url().includes('vseinstrumenti.ru')) {
+            logNetworkRequest('IN', response.request().method(), response.url(), response.status(), 'MAIN');
+            if (response.status() === 403) {
+              log(`🚫 [MAIN-403] Ответ 403 получен`, 'debug');
+            }
+          }
+        });
       }
       
       // Set a more realistic user agent - ОБНОВЛЕННАЯ ВЕРСИЯ
@@ -1432,38 +1542,47 @@ const processProducts = async (headless = true, limit = 0) => {
           if (botProtectionDetected && !usedProxy) {
             log(`🔒 Bot protection detected before attempt ${attempt+1}, will try with proxy`, 'proxy');
             
+            // Проверяем лимит попыток с прокси
+            if (proxyAttempts >= MAX_PROXY_ATTEMPTS) {
+              log(`⚠️ Достигнут лимит попыток с прокси (${MAX_PROXY_ATTEMPTS}) для товара. Пропускаем.`, 'warning');
+              break; // Выходим из цикла попыток
+            }
+            
             // Ensure PROXY_CONFIG.useProxy is respected
             if (PROXY_CONFIG.useProxy) {
-                          // Close current page and browser to clean up resources
-            await page.close().catch(e => log(`Error closing page: ${e.message}`, 'debug'));
-            await localBrowser.close().catch(e => log(`Error closing browser: ${e.message}`, 'debug'));
-            
-            // Get a working proxy - this is critical
-            log(`🔄 Requesting a working proxy...`, 'proxy');
-            currentProxy = await proxyHandler.getNextWorkingProxy();
-            
-            if (currentProxy) {
-              log(`✅ Got proxy: ${currentProxy.host}:${currentProxy.port} (${currentProxy.country})`, 'proxy');
+              proxyAttempts++; // Увеличиваем счетчик попыток с прокси
+              log(`🔄 Попытка с прокси ${proxyAttempts}/${MAX_PROXY_ATTEMPTS}`, 'proxy');
               
-              // Launch a new browser with the proxy
-              localBrowser = await createBrowser(headless, currentProxy);
-              page = await localBrowser.newPage();
-              await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36');
+              // Close current page and browser to clean up resources
+              await page.close().catch(e => log(`Error closing page: ${e.message}`, 'debug'));
+              await localBrowser.close().catch(e => log(`Error closing browser: ${e.message}`, 'debug'));
               
-              // Update flags
-              usedProxy = true;
-              useProxies = true;
+              // Get a working proxy - this is critical
+              log(`🔄 Requesting a working proxy...`, 'proxy');
+              currentProxy = await proxyHandler.getNextWorkingProxy();
               
-              // Reset bot protection flag to give this proxy a chance
-              botProtectionDetected = false;
-              
-              log(`🌐 Successfully switched to proxy for next attempt`, 'proxy');
-            } else {
-              log(`⚠️ Failed to get a working proxy, continuing without one`, 'warning');
-              localBrowser = await createBrowser(headless);
-              page = await localBrowser.newPage();
-              await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36');
-            }
+              if (currentProxy) {
+                log(`✅ Got proxy: ${currentProxy.host}:${currentProxy.port} (${currentProxy.country})`, 'proxy');
+                
+                // Launch a new browser with the proxy
+                localBrowser = await createBrowser(headless, currentProxy);
+                page = await localBrowser.newPage();
+                await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36');
+                
+                // Update flags
+                usedProxy = true;
+                useProxies = true;
+                
+                // Reset bot protection flag to give this proxy a chance
+                botProtectionDetected = false;
+                
+                log(`🌐 Successfully switched to proxy for next attempt`, 'proxy');
+              } else {
+                log(`⚠️ Failed to get a working proxy, continuing without one`, 'warning');
+                localBrowser = await createBrowser(headless);
+                page = await localBrowser.newPage();
+                await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36');
+              }
             } else {
               log(`⚠️ Proxy usage is disabled in config (PROXY_CONFIG.useProxy=false)`, 'warning');
             }
@@ -1476,7 +1595,7 @@ const processProducts = async (headless = true, limit = 0) => {
           await clearCookiesForDomain(page);
           
           // *** НОВАЯ УЛУЧШЕННАЯ НАВИГАЦИЯ С ДЕТАЛЬНОЙ ОТЛАДКОЙ ***
-          log(`🔍 [DEBUG-NAV] URL: ${url}`, 'debug');
+                                  log(`🔍 [DEBUG-NAV] URL: ${shortenUrl(url)}`, 'debug');
           log(`🔍 [DEBUG-NAV] hadRedirectLoop: ${hadRedirectLoop}`, 'debug');
           log(`🔍 [DEBUG-NAV] redirectErrorUrls.has: ${redirectErrorUrls.has(url.split('?')[0])}`, 'debug');
           
@@ -1484,10 +1603,32 @@ const processProducts = async (headless = true, limit = 0) => {
           if (url.includes('vseinstrumenti.ru') && !hadRedirectLoop && !redirectErrorUrls.has(url.split('?')[0])) {
             log(`🚀 [NAVIGATION] Используем трехэтапную навигацию для vseinstrumenti.ru`, 'info');
             
-            const navigationSuccess = await performThreeStageNavigation(page, url, CITY_CONFIG.representId);
+            const navigationSuccess = await performThreeStageNavigation(page, url, CITY_CONFIG.representId, proxyHandler);
             
-            if (!navigationSuccess) {
+            if (!navigationSuccess.success) {
               log(`❌ [NAVIGATION] Трехэтапная навигация не удалась, пробуем двухэтапный fallback`, 'warning');
+              
+              // Проверяем нужен ли прокси на основе результата навигации
+              if (navigationSuccess.needsProxy && !usedProxy && PROXY_CONFIG.useProxy) {
+                log(`🔒 [NAVIGATION] Трехэтапная навигация требует прокси (${navigationSuccess.reason})`, 'proxy');
+                botProtectionDetected = true;
+                
+                // Используем continue чтобы начать новую итерацию с прокси
+                continue;
+              }
+              
+              // Если 403 через прокси - помечаем прокси как failed и пробуем следующий
+              if (navigationSuccess.status === 403 && usedProxy && currentProxy) {
+                log(`🔴 [NAVIGATION] Прокси ${currentProxy.host}:${currentProxy.port} не обошел защиту - помечаем как failed`, 'proxy');
+                proxyHandler.markProxyAsFailed(currentProxy, 'HTTP_403_3STAGE_NAVIGATION');
+                
+                // Сбрасываем флаги и пробуем с новым прокси
+                usedProxy = false;
+                currentProxy = null;
+                botProtectionDetected = true;
+                continue;
+              }
+              
               hadRedirectLoop = true; // Помечаем чтобы в следующий раз использовать fallback
               
               // 🏙️ [FALLBACK] ДВУХЭТАПНЫЙ FALLBACK С ГОРОДОМ
@@ -1498,8 +1639,33 @@ const processProducts = async (headless = true, limit = 0) => {
                 timeout: pageTimeoutMs 
               });
               
-              if (cityFallbackResponse) {
-                log(`✅ [FALLBACK] Город установлен через fallback`, 'info');
+              // Проверяем статус города в fallback
+              if (cityFallbackResponse.success) {
+                log(`✅ [FALLBACK] Город установлен через fallback (статус: ${cityFallbackResponse.status})`, 'info');
+                
+                // Проверяем 403 на этапе города
+                if (cityFallbackResponse.status === 403) {
+                  log(`🚫 [FALLBACK] HTTP 403 на этапе города - регистрируем защиту`, 'warning');
+                  botProtectionDetected = true;
+                  const shouldUseProxy = proxyHandler.registerProtectionHit(); 
+                  
+                  if (shouldUseProxy && !usedProxy && PROXY_CONFIG.useProxy) {
+                    log(`🔒 [FALLBACK] Нужен прокси для города. Total hits: ${proxyHandler.getProtectionHitCount()}`, 'proxy');
+                    continue; // Начинаем новую итерацию с прокси
+                  }
+                  
+                  // Если 403 через прокси - помечаем прокси как failed и пробуем следующий
+                  if (usedProxy && currentProxy) {
+                    log(`🔴 [FALLBACK] Прокси ${currentProxy.host}:${currentProxy.port} не обошел защиту города - помечаем как failed`, 'proxy');
+                    proxyHandler.markProxyAsFailed(currentProxy, 'HTTP_403_FALLBACK_CITY');
+                    
+                    // Сбрасываем флаги и пробуем с новым прокси
+                    usedProxy = false;
+                    currentProxy = null;
+                    botProtectionDetected = true;
+                    continue;
+                  }
+                }
                 
                 // Ждем установки кук
                 await new Promise(resolve => setTimeout(resolve, 1000));
@@ -1510,48 +1676,144 @@ const processProducts = async (headless = true, limit = 0) => {
                   timeout: pageTimeoutMs 
                 });
                 
-                if (!productFallbackResponse) {
-                  throw new Error('Failed to navigate to product page in 2-stage fallback');
+                if (!productFallbackResponse.success) {
+                  // Проверяем статус товара в fallback
+                  if (productFallbackResponse.status === 403) {
+                    log(`🚫 [FALLBACK] HTTP 403 на товаре - регистрируем защиту`, 'warning');
+                    botProtectionDetected = true;
+                    const shouldUseProxy = proxyHandler.registerProtectionHit(); 
+                    
+                    if (shouldUseProxy && !usedProxy && PROXY_CONFIG.useProxy) {
+                      log(`🔒 [FALLBACK] Нужен прокси для товара. Total hits: ${proxyHandler.getProtectionHitCount()}`, 'proxy');
+                      continue; // Начинаем новую итерацию с прокси
+                    }
+                    
+                    // Если 403 через прокси - помечаем прокси как failed и пробуем следующий
+                    if (usedProxy && currentProxy) {
+                      log(`🔴 [FALLBACK] Прокси ${currentProxy.host}:${currentProxy.port} не обошел защиту товара - помечаем как failed`, 'proxy');
+                      proxyHandler.markProxyAsFailed(currentProxy, 'HTTP_403_FALLBACK_PRODUCT');
+                      
+                      // Сбрасываем флаги и пробуем с новым прокси
+                      usedProxy = false;
+                      currentProxy = null;
+                      botProtectionDetected = true;
+                      continue;
+                    }
+                  }
+                  
+                  throw new Error(`Failed to navigate to product page in 2-stage fallback: ${productFallbackResponse.error || 'unknown error'}`);
                 }
                 
-                log(`✅ [FALLBACK] Товар загружен через двухэтапный fallback`, 'success');
+                log(`✅ [FALLBACK] Товар загружен через двухэтапный fallback (статус: ${productFallbackResponse.status})`, 'success');
               } else {
+                // Проверяем статус города в fallback если он не успешен
+                if (cityFallbackResponse.status === 403) {
+                  log(`🚫 [FALLBACK] HTTP 403 на этапе города - регистрируем защиту`, 'warning');
+                  botProtectionDetected = true;
+                  const shouldUseProxy = proxyHandler.registerProtectionHit(); 
+                  
+                  if (shouldUseProxy && !usedProxy && PROXY_CONFIG.useProxy) {
+                    log(`🔒 [FALLBACK] Нужен прокси для города. Total hits: ${proxyHandler.getProtectionHitCount()}`, 'proxy');
+                    continue; // Начинаем новую итерацию с прокси
+                  }
+                  
+                  // Если 403 через прокси - помечаем прокси как failed и пробуем следующий
+                  if (usedProxy && currentProxy) {
+                    log(`🔴 [FALLBACK] Прокси ${currentProxy.host}:${currentProxy.port} не обошел защиту города (неуспешный fallback) - помечаем как failed`, 'proxy');
+                    proxyHandler.markProxyAsFailed(currentProxy, 'HTTP_403_FALLBACK_CITY_FAILED');
+                    
+                    // Сбрасываем флаги и пробуем с новым прокси
+                    usedProxy = false;
+                    currentProxy = null;
+                    botProtectionDetected = true;
+                    continue;
+                  }
+                }
+                
                 // Если и двухэтапный fallback не сработал - используем URL трансформацию
-                log(`⚠️ [FALLBACK] Двухэтапный fallback не сработал, используем URL трансформацию`, 'warning');
+                log(`⚠️ [FALLBACK] Двухэтапный fallback не сработал (${cityFallbackResponse.error || 'unknown error'}), используем URL трансформацию`, 'warning');
                 const transformedUrl = transformUrlWithCityRepresentation(url, CITY_CONFIG.representId);
                 
-                log(`🔄 [FALLBACK] URL трансформация: ${transformedUrl}`, 'debug');
+                log(`🔄 [FALLBACK] URL трансформация: ${shortenUrl(transformedUrl)}`, 'debug');
                 const transformFallbackResponse = await safeNavigate(page, transformedUrl, { 
                   timeout: pageTimeoutMs 
                 });
                 
-                if (!transformFallbackResponse) {
-                  throw new Error('Failed to navigate with all fallback methods (3-stage, 2-stage, transform)');
+                if (!transformFallbackResponse.success) {
+                  // Проверяем статус в трансформации
+                  if (transformFallbackResponse.status === 403) {
+                    log(`🚫 [FALLBACK] HTTP 403 в URL трансформации - регистрируем защиту`, 'warning');
+                    botProtectionDetected = true;
+                    const shouldUseProxy = proxyHandler.registerProtectionHit(); 
+                    
+                    if (shouldUseProxy && !usedProxy && PROXY_CONFIG.useProxy) {
+                      log(`🔒 [FALLBACK] Нужен прокси для трансформации. Total hits: ${proxyHandler.getProtectionHitCount()}`, 'proxy');
+                      continue; // Начинаем новую итерацию с прокси
+                    }
+                    
+                    // Если 403 через прокси - помечаем прокси как failed и пробуем следующий
+                    if (usedProxy && currentProxy) {
+                      log(`🔴 [FALLBACK] Прокси ${currentProxy.host}:${currentProxy.port} не обошел защиту в трансформации - помечаем как failed`, 'proxy');
+                      proxyHandler.markProxyAsFailed(currentProxy, 'HTTP_403_FALLBACK_TRANSFORM');
+                      
+                      // Сбрасываем флаги и пробуем с новым прокси
+                      usedProxy = false;
+                      currentProxy = null;
+                      botProtectionDetected = true;
+                      continue;
+                    }
+                  }
+                  
+                  throw new Error(`Failed to navigate with all fallback methods (3-stage, 2-stage, transform): ${transformFallbackResponse.error || 'unknown error'}`);
                 }
                 
-                log(`✅ [FALLBACK] Товар загружен через URL трансформацию`, 'success');
+                log(`✅ [FALLBACK] Товар загружен через URL трансформацию (статус: ${transformFallbackResponse.status})`, 'success');
               }
               
               // Проверяем куда мы попали после fallback
               const finalUrl = page.url();
-              log(`🔍 [FALLBACK] Финальный URL после fallback: ${finalUrl}`, 'debug');
+              log(`🔍 [FALLBACK] Финальный URL: ${shortenUrl(finalUrl)}`, 'debug');
             } else {
               // ✅ Трехэтапная навигация прошла успешно - теперь переходим на товар
-              log(`🎯 [PRODUCT] Переходим на товар после успешной 3-stage навигации: ${url}`, 'info');
+              log(`🎯 [PRODUCT] Переходим на товар: ${shortenUrl(url)}`, 'info');
               
               const productNavigationStart = Date.now();
               const productResponse = await safeNavigate(page, url, { 
                 timeout: pageTimeoutMs 
               });
               
-              if (!productResponse) {
-                throw new Error('Failed to navigate to product page after 3-stage setup');
+              if (!productResponse.success) {
+                // Проверяем статус товара после успешной 3-stage навигации
+                if (productResponse.status === 403) {
+                  log(`🚫 [PRODUCT] HTTP 403 на товаре после 3-stage - регистрируем защиту`, 'warning');
+                  botProtectionDetected = true;
+                  const shouldUseProxy = proxyHandler.registerProtectionHit(); 
+                  
+                  if (shouldUseProxy && !usedProxy && PROXY_CONFIG.useProxy) {
+                    log(`🔒 [PRODUCT] Нужен прокси для товара. Total hits: ${proxyHandler.getProtectionHitCount()}`, 'proxy');
+                    continue; // Начинаем новую итерацию с прокси
+                  }
+                  
+                  // Если 403 через прокси - помечаем прокси как failed и пробуем следующий
+                  if (usedProxy && currentProxy) {
+                    log(`🔴 [PRODUCT] Прокси ${currentProxy.host}:${currentProxy.port} не обошел защиту товара после 3-stage - помечаем как failed`, 'proxy');
+                    proxyHandler.markProxyAsFailed(currentProxy, 'HTTP_403_PRODUCT_AFTER_3STAGE');
+                    
+                    // Сбрасываем флаги и пробуем с новым прокси
+                    usedProxy = false;
+                    currentProxy = null;
+                    botProtectionDetected = true;
+                    continue;
+                  }
+                }
+                
+                throw new Error(`Failed to navigate to product page after 3-stage setup: ${productResponse.error || 'unknown error'}`);
               }
               
               const productNavigationTime = Date.now() - productNavigationStart;
               const finalUrl = page.url();
-              log(`✅ [PRODUCT] Товар загружен за ${productNavigationTime}ms`, 'info');
-              log(`🔍 [PRODUCT] Финальный URL товара: ${finalUrl}`, 'debug');
+              log(`✅ [PRODUCT] Товар загружен за ${productNavigationTime}ms (статус: ${productResponse.status})`, 'info');
+              log(`🔍 [PRODUCT] Финальный URL: ${shortenUrl(finalUrl)}`, 'debug');
             }
           } else {
             // Для других сайтов или при проблемах с city representation - прямой переход
@@ -1577,9 +1839,35 @@ const processProducts = async (headless = true, limit = 0) => {
               timeout: pageTimeoutMs 
             });
             
-            if (!navigationSuccess) {
-              throw new Error('Failed to navigate to page');
+            if (!navigationSuccess.success) {
+              // Проверяем статус для других сайтов
+              if (navigationSuccess.status === 403) {
+                log(`🚫 [OTHER-SITES] HTTP 403 обнаружен - регистрируем защиту`, 'warning');
+                botProtectionDetected = true;
+                const shouldUseProxy = proxyHandler.registerProtectionHit(); 
+                
+                if (shouldUseProxy && !usedProxy && PROXY_CONFIG.useProxy) {
+                  log(`🔒 [OTHER-SITES] Нужен прокси. Total hits: ${proxyHandler.getProtectionHitCount()}`, 'proxy');
+                  continue; // Начинаем новую итерацию с прокси
+                }
+                
+                // Если 403 через прокси - помечаем прокси как failed и пробуем следующий
+                if (usedProxy && currentProxy) {
+                  log(`🔴 [OTHER-SITES] Прокси ${currentProxy.host}:${currentProxy.port} не обошел защиту - помечаем как failed`, 'proxy');
+                  proxyHandler.markProxyAsFailed(currentProxy, 'HTTP_403_OTHER_SITES');
+                  
+                  // Сбрасываем флаги и пробуем с новым прокси
+                  usedProxy = false;
+                  currentProxy = null;
+                  botProtectionDetected = true;
+                  continue;
+                }
+              }
+              
+              throw new Error(`Failed to navigate to page: ${navigationSuccess.error || 'unknown error'}`);
             }
+            
+            log(`✅ [OTHER-SITES] Страница загружена (статус: ${navigationSuccess.status})`, 'info');
           }
           
           // Check for redirect loop errors - in this case, it's the actual chrome redirect error page
@@ -1595,11 +1883,41 @@ const processProducts = async (headless = true, limit = 0) => {
             
             // Get direct URL without city representation
             const directUrl = getDirectUrl(url);
-            log(`🔄 Retrying with direct URL: ${directUrl}`, 'info');
+            log(`🔄 Retrying with direct URL: ${shortenUrl(directUrl)}`, 'info');
             
             // Clear cookies and retry with direct URL
             await clearCookiesForDomain(page);
-            await safeNavigate(page, directUrl, { timeout: pageTimeoutMs });
+            const directNavigationResult = await safeNavigate(page, directUrl, { timeout: pageTimeoutMs });
+            
+            if (!directNavigationResult.success) {
+              // Проверяем статус при прямой навигации
+              if (directNavigationResult.status === 403) {
+                log(`🚫 [REDIRECT-FIX] HTTP 403 при прямой навигации - регистрируем защиту`, 'warning');
+                botProtectionDetected = true;
+                const shouldUseProxy = proxyHandler.registerProtectionHit(); 
+                
+                if (shouldUseProxy && !usedProxy && PROXY_CONFIG.useProxy) {
+                  log(`🔒 [REDIRECT-FIX] Нужен прокси для прямой навигации. Total hits: ${proxyHandler.getProtectionHitCount()}`, 'proxy');
+                  continue; // Начинаем новую итерацию с прокси
+                }
+                
+                // Если 403 через прокси - помечаем прокси как failed и пробуем следующий
+                if (usedProxy && currentProxy) {
+                  log(`🔴 [REDIRECT-FIX] Прокси ${currentProxy.host}:${currentProxy.port} не обошел защиту при прямой навигации - помечаем как failed`, 'proxy');
+                  proxyHandler.markProxyAsFailed(currentProxy, 'HTTP_403_REDIRECT_FIX');
+                  
+                  // Сбрасываем флаги и пробуем с новым прокси
+                  usedProxy = false;
+                  currentProxy = null;
+                  botProtectionDetected = true;
+                  continue;
+                }
+              }
+              
+              throw new Error(`Failed to navigate with direct URL: ${directNavigationResult.error || 'unknown error'}`);
+            }
+            
+            log(`✅ [REDIRECT-FIX] Прямая навигация успешна (статус: ${directNavigationResult.status})`, 'info');
           }
           
           // Measure page size (content weight)

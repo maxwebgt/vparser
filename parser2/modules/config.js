@@ -29,14 +29,13 @@ export const DATABASE = {
  * Proxy configuration
  */
 export const PROXY_CONFIG = {
-  useProxy: true,
-  apiKey: 'qf8qedpyxethbo8qjdhiol5r4js7lm8jmcs59pkf',
-  switchProxyAfterFailures: 3,
-  testBeforeUse: true,
-  testUrls: [
-    'https://example.org',
-    'https://httpbin.org/ip'
-  ]
+  useProxy: true, // ВКЛЮЧАЕМ для детальной диагностики
+  switchProxyAfterFailures: 2,
+  testUrls: ['https://www.vseinstrumenti.ru/'],
+  webshareApiKey: process.env.WEBSHARE_API_KEY || 'wr-kcqhqr-wr-kcqhqr-wr-kcqhqr-wr-kcqhqr-wr-kcqhqr',
+  webshareApiUrl: 'https://proxy.webshare.io/api/v2/proxy/list/',
+  maxRetries: 3,
+  timeout: 30000
 };
 
 /**
